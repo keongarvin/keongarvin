@@ -28,6 +28,9 @@ packing checklists per trip.
      (Supabase dashboard → Settings → API)
    - `ANTHROPIC_API_KEY`
 4. **Deploy**: import the repo in Vercel and set the same three env vars.
+   `vercel.json` registers a daily cron that pings `/api/keepalive` so the
+   Supabase free-tier project never pauses for inactivity. Optionally set a
+   `CRON_SECRET` env var in Vercel to restrict that endpoint to Vercel Cron.
 
 ## Local development
 

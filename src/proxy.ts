@@ -46,5 +46,9 @@ export default async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
+  // API routes are excluded: they enforce their own auth (analyze-photo
+  // returns 401 without a session; keepalive is hit by Vercel Cron).
+  matcher: [
+    "/((?!api/|_next/static|_next/image|favicon.ico|manifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+  ],
 };
