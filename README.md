@@ -14,9 +14,10 @@ packing checklists per trip.
 ## One-time setup
 
 1. **Supabase project** (https://supabase.com/dashboard):
-   - Run `supabase/migrations/0001_init.sql` in the SQL editor (creates tables,
-     RLS policies, the `photos` storage bucket, and seed data — categories, people,
-     and the house's rooms). Or link the project and run `supabase db push`.
+   - Run the files in `supabase/migrations/` in order in the SQL editor:
+     `0001_init.sql` (tables, RLS policies, the `photos` storage bucket, and seed
+     data — categories, people, the house's rooms) then `0002_checklists.sql`
+     (completeness checklists). Or link the project and run `supabase db push`.
    - Auth → Sign In / Up: enable **Email** provider, and turn **off**
      "Allow new users to sign up".
    - Auth → Users: click "Add user" twice — create accounts for Keon and Claire
@@ -41,12 +42,19 @@ npm run dev
 
 ## How it works
 
-- **Inventory** (`/`): search, filter by location/category/person, flag
+- **Home / dashboard** (`/`): at-a-glance counts, items needing attention
+  (expiring / low stock), and a health bar for each completeness checklist.
+- **Inventory** (`/inventory`): search, filter by location/category/person, flag
   expiring/low-stock items, group by any dimension.
-- **Snap** (`/snap`): lay items out → photo → the photo is downscaled on-device,
-  uploaded to Supabase Storage, and sent to `/api/analyze-photo`, which calls
-  Claude with a structured-output schema. You review/edit the detected items,
-  then confirm to add them all (linked to the photo).
+- **Snap** (`/snap`): lay items out → take a photo *or upload a batch of existing
+  photos* → each is downscaled on-device, uploaded to Supabase Storage, and sent
+  to `/api/analyze-photo`, which calls Claude with a structured-output schema. You
+  review/edit the detected items (fill gaps, rename), then confirm to add them all
+  (each linked to its source photo).
+- **Checklists** (`/checklists`): define what you *want* at the cabin with target
+  counts (e.g. "Keon's closet": 5 t-shirts, 2 jackets). Each entry is matched
+  against inventory by name; the health bar shows how close you are. Scope a
+  checklist to a room or person so it only counts what's actually there.
 - **Trips** (`/trips`): per-trip packing checklist ("pack" / "bring home") with a
   searchable "already at the cabin" list. Completing a trip adds checked pack
   items to inventory and decrements/removes checked bring-home items.

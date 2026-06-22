@@ -67,6 +67,25 @@ export type TripItemWithItem = TripItem & {
   item: Item | null;
 };
 
+export type Checklist = {
+  id: string;
+  name: string;
+  location_id: string | null;
+  person_id: string | null;
+  sort_order: number;
+  created_at: string;
+};
+
+export type ChecklistItem = {
+  id: string;
+  checklist_id: string;
+  name: string;
+  target_quantity: number;
+  category_id: string | null;
+  sort_order: number;
+  created_at: string;
+};
+
 /** Build "Floor › Room › Area" breadcrumbs for every location. */
 export function locationPaths(locations: Location[]): Map<string, string> {
   const byId = new Map(locations.map((l) => [l.id, l]));

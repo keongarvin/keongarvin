@@ -4,10 +4,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const tabs = [
-  { href: "/", label: "Inventory", icon: "📦" },
-  { href: "/snap", label: "Snap", icon: "📷" },
-  { href: "/trips", label: "Trips", icon: "🧳" },
-  { href: "/settings", label: "Settings", icon: "⚙️" },
+  { href: "/", label: "Home", icon: "📊", match: (p: string) => p === "/" || p.startsWith("/checklists") },
+  {
+    href: "/inventory",
+    label: "Inventory",
+    icon: "📦",
+    match: (p: string) => p.startsWith("/inventory") || p.startsWith("/items"),
+  },
+  { href: "/snap", label: "Snap", icon: "📷", match: (p: string) => p.startsWith("/snap") },
+  { href: "/trips", label: "Trips", icon: "🧳", match: (p: string) => p.startsWith("/trips") },
+  { href: "/settings", label: "Settings", icon: "⚙️", match: (p: string) => p.startsWith("/settings") },
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -19,15 +25,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <nav className="fixed inset-x-0 bottom-0 border-t border-stone-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-2xl">
           {tabs.map((tab) => {
-            const active =
-              tab.href === "/"
-                ? pathname === "/" || pathname.startsWith("/items")
-                : pathname.startsWith(tab.href);
+            const active = tab.match(pathname);
             return (
               <Link
                 key={tab.href}
                 href={tab.href}
-                className={`flex flex-1 flex-col items-center gap-0.5 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-xs ${
+                className={`flex flex-1 flex-col items-center gap-0.5 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[11px] ${
                   active ? "font-semibold text-pine-700" : "text-stone-500"
                 }`}
               >

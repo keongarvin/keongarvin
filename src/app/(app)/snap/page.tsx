@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase/client";
@@ -21,6 +20,7 @@ type Draft = {
   person_id: string | null;
   notes: string | null;
   confidence: "high" | "medium" | "low";
+  photoId: string;
 };
 
 function matchLocation(
@@ -33,81 +33,101 @@ function matchLocation(
   for (const [id, path] of paths) {
     if (path.toLowerCase() === s) return id;
   }
-  const byName = locations.find((l) => l.name.toLowerCase() === s);
-  return byName?.id ?? null;
+  return locations.find((l) => l.name.toLowerCase() === s)?.id ?? null;
 }
 
 export default function SnapPage() {
   const { categories, locations, people } = useLookups();
   const paths = useMemo(() => locationPaths(locations), [locations]);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const uploadInput = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<Step>("capture");
   const [error, setError] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [photoId, setPhotoId] = useState<string | null>(null);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [photoCount, setPhotoCount] = useState(0);
   const [defaultLocationId, setDefaultLocationId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const keyCounter = useRef(0);
 
-  async function handleFile(file: File) {
+  async function processOne(file: File): Promise<Draft[]> {
+    const supabase = supabaseBrowser();
+    const blob = await downscaleImage(file);
+    const storagePath = `${crypto.randomUUID()}.jpg`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("photos")
+      .upload(storagePath, blob, { contentType: "image/jpeg" });
+    if (uploadError) throw new Error(uploadError.message);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const { data: photo, error: photoError } = await supabase
+      .from("photos")
+      .insert({ storage_path: storagePath, uploaded_by: user?.id ?? null })
+      .select()
+      .single();
+    if (photoError || !photo) throw new Error(photoError?.message ?? "Photo insert failed");
+
+    const res = await fetch("/api/analyze-photo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storagePath }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(body?.error ?? "Photo analysis failed");
+    }
+    const detection = (await res.json()) as DetectionT;
+
+    return detection.items.map((d) => ({
+      key: keyCounter.current++,
+      name: d.name,
+      quantity: Math.max(1, d.quantity),
+      category_id:
+        categories.find((c) => c.name.toLowerCase() === d.category.toLowerCase())?.id ?? null,
+      location_id: matchLocation(d.suggested_location, locations, paths),
+      person_id:
+        people.find((p) => p.name.toLowerCase() === (d.person ?? "").toLowerCase())?.id ?? null,
+      notes: d.notes,
+      confidence: d.confidence,
+      photoId: photo.id,
+    }));
+  }
+
+  async function handleFiles(files: File[]) {
+    if (files.length === 0) return;
     setError(null);
     setStep("analyzing");
-    setPreviewUrl(URL.createObjectURL(file));
-    try {
-      const supabase = supabaseBrowser();
-      const blob = await downscaleImage(file);
-      const storagePath = `${crypto.randomUUID()}.jpg`;
+    setPhotoCount(files.length);
+    setProgress({ done: 0, total: files.length });
 
-      const { error: uploadError } = await supabase.storage
-        .from("photos")
-        .upload(storagePath, blob, { contentType: "image/jpeg" });
-      if (uploadError) throw new Error(uploadError.message);
-
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const { data: photo, error: photoError } = await supabase
-        .from("photos")
-        .insert({ storage_path: storagePath, uploaded_by: user?.id ?? null })
-        .select()
-        .single();
-      if (photoError || !photo) throw new Error(photoError?.message ?? "Photo insert failed");
-      setPhotoId(photo.id);
-
-      const res = await fetch("/api/analyze-photo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storagePath }),
-      });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? "Photo analysis failed");
+    const collected: Draft[] = [];
+    const failures: number[] = [];
+    for (let i = 0; i < files.length; i++) {
+      try {
+        collected.push(...(await processOne(files[i])));
+      } catch (err) {
+        failures.push(i + 1);
+        console.error("photo failed", err);
       }
-      const detection = (await res.json()) as DetectionT;
-
-      setDrafts(
-        detection.items.map((d) => ({
-          key: keyCounter.current++,
-          name: d.name,
-          quantity: Math.max(1, d.quantity),
-          category_id:
-            categories.find((c) => c.name.toLowerCase() === d.category.toLowerCase())?.id ??
-            null,
-          location_id: matchLocation(d.suggested_location, locations, paths),
-          person_id:
-            people.find((p) => p.name.toLowerCase() === (d.person ?? "").toLowerCase())?.id ??
-            null,
-          notes: d.notes,
-          confidence: d.confidence,
-        }))
-      );
-      setStep("review");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-      setStep("capture");
+      setProgress({ done: i + 1, total: files.length });
     }
+
+    if (collected.length === 0) {
+      setError(
+        "Couldn't read any items from those photos. Try again, or add items manually from Inventory."
+      );
+      setStep("capture");
+      return;
+    }
+    if (failures.length > 0) {
+      setError(`${failures.length} photo(s) couldn't be analyzed and were skipped.`);
+    }
+    setDrafts(collected);
+    setStep("review");
   }
 
   function updateDraft(key: number, patch: Partial<Draft>) {
@@ -115,30 +135,30 @@ export default function SnapPage() {
   }
 
   async function confirm() {
-    if (!photoId) return;
     setSaving(true);
     setError(null);
     try {
       const supabase = supabaseBrowser();
-      const rows = drafts
-        .filter((d) => d.name.trim())
-        .map((d) => ({
-          name: d.name.trim(),
-          quantity: d.quantity,
-          category_id: d.category_id,
-          location_id: d.location_id ?? defaultLocationId,
-          person_id: d.person_id,
-          notes: d.notes,
-        }));
+      const valid = drafts.filter((d) => d.name.trim());
+      const rows = valid.map((d) => ({
+        name: d.name.trim(),
+        quantity: d.quantity,
+        category_id: d.category_id,
+        location_id: d.location_id ?? defaultLocationId,
+        person_id: d.person_id,
+        notes: d.notes,
+      }));
       const { data: inserted, error: insertError } = await supabase
         .from("items")
         .insert(rows)
         .select("id");
       if (insertError || !inserted) throw new Error(insertError?.message ?? "Insert failed");
 
-      const { error: linkError } = await supabase
-        .from("item_photos")
-        .insert(inserted.map((row) => ({ item_id: row.id, photo_id: photoId })));
+      const links = inserted.map((row, i) => ({
+        item_id: row.id,
+        photo_id: valid[i].photoId,
+      }));
+      const { error: linkError } = await supabase.from("item_photos").insert(links);
       if (linkError) throw new Error(linkError.message);
 
       setStep("saved");
@@ -152,82 +172,90 @@ export default function SnapPage() {
   function reset() {
     setStep("capture");
     setError(null);
-    setPreviewUrl(null);
-    setPhotoId(null);
+    setProgress({ done: 0, total: 0 });
     setDrafts([]);
+    setPhotoCount(0);
     setDefaultLocationId(null);
-    if (fileInput.current) fileInput.current.value = "";
+    if (cameraInput.current) cameraInput.current.value = "";
+    if (uploadInput.current) uploadInput.current.value = "";
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold text-pine-800">Snap</h1>
+      <h1 className="text-xl font-semibold text-pine-800">Add by photo</h1>
 
       {step === "capture" && (
         <>
           <p className="text-sm text-stone-500">
-            Lay items out so they&apos;re visible, take one photo, and Claude will identify
-            and catalog them for you to review.
+            Lay items out so they&apos;re visible. Take a new photo, or upload a batch you
+            already have — Claude identifies the items in each and you review before saving.
           </p>
           {error && <p className="text-sm text-red-600">{error}</p>}
+
           <input
-            ref={fileInput}
+            ref={cameraInput}
             type="file"
             accept="image/*"
             capture="environment"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) void handleFile(file);
+              if (file) void handleFiles([file]);
             }}
           />
+          <input
+            ref={uploadInput}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) void handleFiles(files);
+            }}
+          />
+
           <button
             type="button"
-            onClick={() => fileInput.current?.click()}
+            onClick={() => cameraInput.current?.click()}
             className="rounded-xl bg-pine-700 px-4 py-6 text-lg font-medium text-white"
           >
             📷 Take a photo
+          </button>
+          <button
+            type="button"
+            onClick={() => uploadInput.current?.click()}
+            className="rounded-xl border border-pine-700 px-4 py-5 text-lg font-medium text-pine-700"
+          >
+            🖼️ Upload existing photos
           </button>
         </>
       )}
 
       {step === "analyzing" && (
-        <div className="flex flex-col items-center gap-4 py-8">
-          {previewUrl && (
-            <Image
-              src={previewUrl}
-              alt="Your photo"
-              width={224}
-              height={224}
-              unoptimized
-              className="h-56 w-56 rounded-xl object-cover opacity-70"
-            />
+        <div className="flex flex-col items-center gap-4 py-10">
+          <p className="animate-pulse text-stone-500">
+            Claude is identifying your stuff…
+          </p>
+          {progress.total > 1 && (
+            <p className="text-sm text-stone-400">
+              Photo {progress.done} of {progress.total}
+            </p>
           )}
-          <p className="animate-pulse text-stone-500">Claude is identifying your stuff…</p>
         </div>
       )}
 
       {step === "review" && (
         <>
-          <div className="flex items-center gap-3">
-            {previewUrl && (
-              <Image
-                src={previewUrl}
-                alt="Your photo"
-                width={64}
-                height={64}
-                unoptimized
-                className="h-16 w-16 rounded-lg object-cover"
-              />
-            )}
-            <p className="text-sm text-stone-500">
-              Found <strong>{drafts.length}</strong> item{drafts.length === 1 ? "" : "s"}.
-              Edit anything that&apos;s off, then confirm.
-            </p>
-          </div>
+          <p className="text-sm text-stone-500">
+            Found <strong>{drafts.length}</strong> item{drafts.length === 1 ? "" : "s"} across{" "}
+            {photoCount} photo{photoCount === 1 ? "" : "s"}. Fix anything that&apos;s off, fill
+            in gaps, then confirm.
+          </p>
+          {error && <p className="text-sm text-amber-700">{error}</p>}
 
           <label className="flex flex-col gap-1 text-sm font-medium text-stone-600">
-            Where is this stuff going? (used when an item has no location)
+            Default location (used when an item has none)
             <LocationSelect
               locations={locations}
               value={defaultLocationId}
@@ -251,6 +279,7 @@ export default function SnapPage() {
                 <input
                   value={draft.name}
                   onChange={(e) => updateDraft(draft.key, { name: e.target.value })}
+                  placeholder="Item name"
                   className={`${inputClass} flex-1`}
                 />
                 <button
@@ -269,9 +298,7 @@ export default function SnapPage() {
                 />
                 <select
                   value={draft.person_id ?? ""}
-                  onChange={(e) =>
-                    updateDraft(draft.key, { person_id: e.target.value || null })
-                  }
+                  onChange={(e) => updateDraft(draft.key, { person_id: e.target.value || null })}
                   className="rounded-lg border border-stone-300 bg-white px-2 py-2 text-sm"
                 >
                   <option value="">Whose?</option>
@@ -285,9 +312,7 @@ export default function SnapPage() {
               <div className="grid grid-cols-2 gap-2">
                 <select
                   value={draft.category_id ?? ""}
-                  onChange={(e) =>
-                    updateDraft(draft.key, { category_id: e.target.value || null })
-                  }
+                  onChange={(e) => updateDraft(draft.key, { category_id: e.target.value || null })}
                   className="rounded-lg border border-stone-300 bg-white px-2 py-2 text-sm"
                 >
                   <option value="">Category…</option>
@@ -321,15 +346,14 @@ export default function SnapPage() {
                   person_id: null,
                   notes: null,
                   confidence: "high",
+                  photoId: prev[prev.length - 1]?.photoId ?? "",
                 },
               ])
             }
             className="rounded-lg border border-dashed border-stone-300 px-3 py-2 text-sm text-stone-500"
           >
-            + Add another item
+            + Add an item Claude missed
           </button>
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
 
           <button
             type="button"
@@ -357,10 +381,10 @@ export default function SnapPage() {
               onClick={reset}
               className="rounded-lg bg-pine-700 px-4 py-2 font-medium text-white"
             >
-              Snap another
+              Add more
             </button>
             <Link
-              href="/"
+              href="/inventory"
               className="rounded-lg border border-stone-300 px-4 py-2 font-medium text-stone-600"
             >
               View inventory
